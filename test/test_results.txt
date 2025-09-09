@@ -1,0 +1,12 @@
+2025-09-10 00:19:42.271350: === HR Document Storage Test ===
+2025-09-10 00:19:42.271892: Testing imports...
+2025-09-10 00:19:47.653094: ✓ Successfully imported store_document
+2025-09-10 00:19:47.653739: Checking file: data/HR 产假智能助手.pdf
+2025-09-10 00:19:47.654360: ✓ File found, size: 816764 bytes
+2025-09-10 00:19:47.654838: Attempting to store document in ChromaDB...
+2025-09-10 00:19:47.923127: === STORAGE RESULTS ===
+2025-09-10 00:19:47.923588: Success: False
+2025-09-10 00:19:47.924142: File Path: data/HR 产假智能助手.pdf
+2025-09-10 00:19:47.924800: File Name: HR 产假智能助手.pdf
+2025-09-10 00:19:47.925711: ✗ Error: Error storing document data/HR 产假智能助手.pdf: Could not import chromadb python package. Please install it with `pip install chromadb`.
+2025-09-10 00:19:47.926159: === TEST FAILED ===

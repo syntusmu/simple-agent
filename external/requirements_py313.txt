@@ -1,0 +1,28 @@
+# Core packages that work with Python 3.13
+numpy>=1.26.0
+requests>=2.32.3
+tiktoken>=0.7.0
+openai>=1.35.0
+rank-bm25==0.2.2
+
+# LangChain ecosystem - using latest versions
+langchain>=0.2.0
+langchain-core>=0.2.0
+langchain-community>=0.2.0
+langchain-text-splitters>=0.2.0
+langchain-openai>=0.1.8
+
+# Document processing - simplified
+python-docx>=0.8.11
+
+# Alternative to pandas for now (if needed)
+# We'll install pandas separately with specific handling
+
+# Alternative to chromadb - we'll handle this separately
+# chromadb
+
+# Alternative to transformers - we'll handle this separately
+# transformers
+
+# Alternative to docling - we'll skip this for now as it has complex dependencies
+# docling
