@@ -16,6 +16,7 @@ from ..service.rag.retriever import RRFRetriever
 from ..service.prompt.prompt import create_react_prompt
 from ..tools.data_analyzer import analyze_excel_with_pandas
 from ..tools.contextual_analyzer import analyze_document_contextually
+from ..tools.postgresql_tool import query_postgresql_database
 from .memory import SimpleMemoryManager, create_memory_manager
 
 # Configure logging
@@ -143,7 +144,24 @@ class ReActAgent:
             )
         )
         
-        self.tools = [retriever_tool, data_analyzer_tool, list_file_tool, contextual_tool]
+        # Create PostgreSQL database tool
+        postgresql_tool = Tool(
+            name="postgresql_database",
+            func=self._postgresql_wrapper,
+            description=(
+                "WHEN TO USE: Query PostgreSQL database with natural language or analyze database structure.\n"
+                "PURPOSE: Execute database queries, get schema information, analyze data in PostgreSQL.\n"
+                "INPUT FORMAT: 'connection_string|query' where connection_string is PostgreSQL URI.\n"
+                "CONNECTION: postgresql://username:password@host:port/database\n"
+                "EXAMPLES:\n"
+                "- 'postgresql://user:pass@localhost:5432/mydb|show me top 10 customers'\n"
+                "- 'postgresql://user:pass@localhost:5432/mydb|get database schema'\n"
+                "- 'postgresql://user:pass@localhost:5432/mydb|analyze sales trends by month'\n"
+                "SECURITY: Use environment variables for credentials in production."
+            )
+        )
+        
+        self.tools = [retriever_tool, data_analyzer_tool, list_file_tool, contextual_tool, postgresql_tool]
         logger.info(f"Setup {len(self.tools)} tools: {[tool.name for tool in self.tools]}")
     
     def _excel_analyzer_wrapper(self, input_str: str) -> str:
@@ -333,6 +351,46 @@ class ReActAgent:
             
         except Exception as e:
             error_msg = f"Error in contextual analysis: {str(e)}"
+            logger.error(error_msg)
+            return error_msg
+    
+    def _postgresql_wrapper(self, input_str: str) -> str:
+        """
+        Wrapper for PostgreSQL database tool.
+        
+        Args:
+            input_str: 'connection_string|query' format
+            
+        Returns:
+            Database query results or error message
+        """
+        try:
+            # Parse input - must have connection string and query
+            if '|' not in input_str:
+                return "Error: Please provide input in format 'connection_string|query'"
+            
+            connection_string, query = input_str.split('|', 1)
+            connection_string = connection_string.strip()
+            query = query.strip()
+            
+            if not connection_string:
+                return "Error: Please provide a valid PostgreSQL connection string"
+            
+            if not query:
+                return "Error: Please provide a valid query"
+            
+            # Special handling for schema requests
+            if query.lower() in ['schema', 'get schema', 'show schema', 'database schema', 'get database schema']:
+                from ..tools.postgresql_tool import get_postgresql_schema
+                result = get_postgresql_schema(connection_string)
+            else:
+                # Execute natural language query
+                result = query_postgresql_database(connection_string, query)
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"Error in PostgreSQL query: {str(e)}"
             logger.error(error_msg)
             return error_msg
     

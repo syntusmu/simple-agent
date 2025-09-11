@@ -3,6 +3,10 @@ numpy>=1.26.0
 pandas>=2.2.0
 requests>=2.32.3
 
+# Database connectivity
+psycopg2-binary>=2.9.0
+sqlalchemy>=2.0.0
+
 # AI/ML libraries
 transformers>=4.40.0
 sentence-transformers>=2.2.0
