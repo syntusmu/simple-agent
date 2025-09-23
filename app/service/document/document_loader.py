@@ -41,8 +41,8 @@ class MultiFileLoader:
         ".pdf": PyPDFLoader,
         ".docx": UnstructuredWordDocumentLoader,
         ".doc": UnstructuredWordDocumentLoader,
-        ".xlsx": UnstructuredExcelLoader,
-        ".xls": UnstructuredExcelLoader,
+        ".xlsx": "pandas_excel",  # Use pandas for better Excel content extraction
+        ".xls": "pandas_excel",   # Use pandas for better Excel content extraction
         ".csv": CSVLoader,
         ".html": BSHTMLLoader,
         ".htm": BSHTMLLoader,
@@ -121,6 +121,16 @@ class MultiFileLoader:
         else:
             loader_cls = self.FILE_LOADER_MAP.get(ext)
         
+        # Handle pandas Excel loader specially
+        if loader_cls == "pandas_excel":
+            if PANDAS_AVAILABLE:
+                if self.show_progress:
+                    logger.info(f"Using pandas Excel loader for {file_path.name}")
+                return "pandas_excel", actual_path
+            else:
+                logger.warning(f"Pandas not available, falling back to UnstructuredExcelLoader for {file_path.name}")
+                loader_cls = UnstructuredExcelLoader
+        
         if loader_cls:
             if self.show_progress and actual_path == file_path:
                 logger.info(f"Using {loader_cls.__name__} for {file_path.name}")
@@ -155,6 +165,10 @@ class MultiFileLoader:
             if self.show_progress:
                 logger.info(f"Loading: {file_path.name}")
             
+            # Handle pandas Excel loader specially
+            if loader == "pandas_excel":
+                return self._load_excel_with_pandas(file_path)
+            
             docs = loader.load()
             
             # Update metadata if we used docling
@@ -169,9 +183,9 @@ class MultiFileLoader:
         except Exception as e:
             logger.warning(f"Could not load {file_path.name}: {e}")
             
-            # Try pandas fallback for Excel files
+            # Try pandas fallback for Excel files (only if not already using pandas)
             ext = file_path.suffix.lower()
-            if ext in ['.xlsx', '.xls'] and PANDAS_AVAILABLE:
+            if ext in ['.xlsx', '.xls'] and PANDAS_AVAILABLE and loader != "pandas_excel":
                 logger.info(f"Trying pandas fallback for {file_path.name}")
                 return self._load_excel_with_pandas(file_path)
             

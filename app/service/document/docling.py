@@ -3,6 +3,9 @@ import os
 from pathlib import Path
 from typing import Optional, Tuple, Union
 
+# Import common configuration for offline mode
+from ...utils.common import initialize_offline_document_processing
+
 from docling.datamodel.base_models import InputFormat
 from docling_core.types.doc.base import ImageRefMode
 from docling.document_converter import (
@@ -27,8 +30,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Set model artifact directory before importing anything that downloads models
-os.environ["DOCLING_CACHE_DIR"] = str(Path("model_artifacts/docling").resolve())
+# Offline mode and cache configuration is handled by common.py import above
 
 class DocumentProcessor:
     """Document processor using Docling library for converting various formats to Markdown."""
@@ -88,24 +90,40 @@ class DocumentProcessor:
             )
 
     def _initialize_document_converter(self) -> DocumentConverter:
-        """Initialize the document converter with appropriate format options.
+        """Initialize the document converter with offline mode configuration using local models.
         
         Returns:
             Configured DocumentConverter instance
         """
+        logger.info("Docling configured for offline mode using local model artifacts")
+        
         pdf_pipeline = None
         if self.input_file.suffix.lower() == '.pdf':
+            # Configure OCR options
+            ocr_options = EasyOcrOptions(
+                force_full_page_ocr=True, 
+                lang=["en"]
+            )
+            
+            # Configure local model paths for offline mode
+            model_artifacts_path = Path("model_artifacts/docling").resolve()
+            
+            # Use TableFormer ACCURATE mode with local models
             pdf_pipeline = PdfPipelineOptions(
+                artifacts_path=str(model_artifacts_path),
                 do_table_structure=True,
-                do_ocr=True,
-                ocr_options=EasyOcrOptions(force_full_page_ocr=True, lang=["en"]),
+                do_ocr=False,  # Disable OCR for offline mode
+                ocr_options=ocr_options,
                 table_structure_options=TableStructureOptions(
-                    do_cell_matching=False,
-                    mode=TableFormerMode.ACCURATE
+                    do_cell_matching=True,
+                    mode=TableFormerMode.ACCURATE,  # Uses local accurate model
+                    model_path=str(model_artifacts_path / "accurate" / "tableformer_accurate.safetensors")
                 ),
-                generate_page_images=True,
-                generate_picture_images=True,
+                generate_page_images=False,
+                generate_picture_images=False,
                 images_scale=2.0,
+                # Specify layout detection model path
+                layout_model_path=str(model_artifacts_path / "model.safetensors")
             )
 
         return DocumentConverter(
@@ -116,6 +134,7 @@ class DocumentProcessor:
                 InputFormat.CSV: CsvFormatOption(pipeline_cls=SimplePipeline),
             },
         )
+
 
     def _configure_settings(self) -> None:
         """Configure Docling settings."""
@@ -149,7 +168,8 @@ class DocumentProcessor:
             Tuple of (markdown_content, document_filename)
         """
         doc_filename = self.input_file.stem
-        md_content = result.document.export_to_markdown(image_mode=ImageRefMode.EMBEDDED)
+        # md_content = result.document.export_to_markdown(image_mode=ImageRefMode.EMBEDDED)
+        md_content = result.document.export_to_markdown(image_mode=ImageRefMode.PLACEHOLDER)
         logger.debug(f"Markdown content generated for {doc_filename}")
         return md_content, doc_filename
 

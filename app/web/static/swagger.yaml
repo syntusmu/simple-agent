@@ -1,0 +1,480 @@
+openapi: 3.0.3
+info:
+  title: Maternity Agent Dialog API
+  description: |
+    Flask web server API for the Maternity Agent Dialog chatbot system.
+    
+    This API provides endpoints to interact with an AI agent that specializes in maternity leave policies and related information.
+    
+    ## Features
+    - Chat with AI agent using text queries
+    - File upload support for document analysis
+    - Session-based conversations
+    - Advanced chat endpoint with file upload support
+    
+  version: 1.0.0
+  contact:
+    name: Maternity Agent Dialog
+    email: support@example.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:5051
+    description: Development server
+  - url: https://api.maternity-agent.com
+    description: Production server
+
+tags:
+  - name: Health
+    description: Health check and server status
+  - name: Chat
+    description: Chat with the AI agent
+  - name: Upload
+    description: Upload documents to vector database
+  - name: Info
+    description: Server information
+
+paths:
+  /:
+    get:
+      tags:
+        - Info
+      summary: Get server information
+      description: Returns basic server information and available endpoints
+      responses:
+        '200':
+          description: Server information retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Maternity Agent Dialog Server is running!"
+                  endpoints:
+                    type: object
+                    properties:
+                      chat:
+                        type: string
+                        example: "/api/chat"
+                      upload:
+                        type: string
+                        example: "/api/upload"
+
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Check if the server is healthy and running
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  service:
+                    type: string
+                    example: "maternity-agent-dialog"
+
+  /api/chat:
+    post:
+      tags:
+        - Chat
+      summary: Chat with the AI agent
+      description: |
+        Send a message to the AI agent with full control over user ID and session.
+        Supports both JSON requests and file uploads via multipart/form-data.
+        
+        ### JSON Request (no files)
+        Send a JSON payload with user_id, user_session, and user_query.
+        
+        ### Multipart Request (with files)
+        Send form data with the same parameters plus file uploads.
+        Files will be processed and analyzed by the AI agent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - user_id
+                - user_session
+                - user_query
+              properties:
+                user_id:
+                  type: string
+                  description: Unique identifier for the user
+                  example: "user123"
+                user_session:
+                  type: string
+                  description: Session identifier for conversation tracking
+                  example: "session456"
+                user_query:
+                  type: string
+                  description: The message/question to send to the AI agent
+                  example: "Based on the uploaded document, what is the maternity leave policy for Beijing?"
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - user_id
+                - user_session
+                - user_query
+              properties:
+                user_id:
+                  type: string
+                  description: Unique identifier for the user
+                  example: "user123"
+                user_session:
+                  type: string
+                  description: Session identifier for conversation tracking
+                  example: "session456"
+                user_query:
+                  type: string
+                  description: The message/question to send to the AI agent
+                  example: "What policies are mentioned in the uploaded file?"
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  description: Files to upload for analysis (Excel, PDF, Word, etc.)
+      responses:
+        '200':
+          description: Chat response received successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ChatResponse'
+                  - type: object
+                    properties:
+                      files_processed:
+                        type: integer
+                        description: Number of files that were processed
+                        example: 2
+        '400':
+          description: Bad request - missing required parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/upload:
+    post:
+      tags:
+        - Upload
+      summary: Upload documents to vector database
+      description: |
+        Upload documents directly to the ChromaDB vector database for future retrieval.
+        Files are stored in the uploads directory and then processed into vector embeddings.
+        
+        Supported file types: .txt, .pdf, .doc, .docx, .xls, .xlsx, .csv, .json
+        
+        This endpoint is different from the chat endpoint - it only stores documents
+        without generating a chat response. Use this for bulk document uploads.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  description: Documents to upload and store in vector database
+      responses:
+        '200':
+          description: Upload completed (may include partial failures)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
+        '400':
+          description: Bad request - no files provided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/vector/delete:
+    post:
+      tags:
+        - Upload
+      summary: Delete documents from vector database
+      description: |
+        Delete documents from the ChromaDB vector database by filename.
+        All document chunks with the matching filename will be deleted.
+        
+        The file_name should match exactly with documents stored in the vector database.
+        This endpoint is used by the web interface delete buttons for individual document removal.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                file_name:
+                  type: string
+                  description: Exact filename of the document to delete
+                  example: "各地产假规定一览表 to GE.xlsx"
+              required:
+                - file_name
+      responses:
+        '200':
+          description: Document deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Successfully deleted 5 chunks for file: example.xlsx"
+                  deleted_chunks:
+                    type: integer
+                    description: Number of document chunks deleted
+                    example: 5
+                  deleted_documents:
+                    type: array
+                    items:
+                      type: string
+                    description: List of document IDs that were deleted
+                    example: ["doc_1", "doc_2", "doc_3"]
+        '400':
+          description: Bad request - missing or invalid file_name
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  error:
+                    type: string
+                    example: "No documents found with filename: nonexistent.pdf"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/vector/list:
+    get:
+      tags:
+        - Upload
+      summary: List documents in vector database
+      description: |
+        List all documents currently stored in the ChromaDB vector database.
+        Returns document metadata including filenames, types, chunk counts, and upload timestamps.
+        This endpoint is used by the web interface to populate the documents table.
+      responses:
+        '200':
+          description: Documents list retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  total_documents:
+                    type: integer
+                    description: Total number of document chunks
+                    example: 45
+                  total_chunks:
+                    type: integer
+                    description: Total number of chunks across all documents
+                    example: 45
+                  unique_files:
+                    type: integer
+                    description: Number of unique files
+                    example: 3
+                  files_summary:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        file_name:
+                          type: string
+                          example: "maternity_policy.pdf"
+                        file_type:
+                          type: string
+                          example: "pdf"
+                        chunk_count:
+                          type: integer
+                          example: 15
+                        total_content_size:
+                          type: integer
+                          example: 12345
+                        upload_timestamp:
+                          type: string
+                          format: date-time
+                          example: "2024-01-15T10:30:00Z"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    ChatResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether the request was successful
+          example: true
+        response:
+          type: string
+          description: The AI agent's response to the user query
+          example: "Based on the current policies, Shanghai provides 158 days of maternity leave, which includes 98 days of basic maternity leave plus 60 days of extended leave..."
+        user_id:
+          type: string
+          description: The user ID that was used for this request
+          example: "user123"
+        user_session:
+          type: string
+          description: The session ID that was used for this request
+          example: "session456"
+      required:
+        - success
+        - response
+        - user_id
+        - user_session
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Always false for error responses
+          example: false
+        error:
+          type: string
+          description: Description of the error that occurred
+          example: "user_query is required"
+      required:
+        - success
+        - error
+
+    UploadResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          description: Whether at least one file was successfully uploaded
+          example: true
+        total_files:
+          type: integer
+          description: Total number of files processed
+          example: 2
+        successful_uploads:
+          type: integer
+          description: Number of files successfully uploaded
+          example: 1
+        failed_uploads:
+          type: integer
+          description: Number of files that failed to upload
+          example: 1
+        total_chunks_stored:
+          type: integer
+          description: Total number of document chunks stored in vector database
+          example: 45
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              file_name:
+                type: string
+                description: Original filename
+                example: "maternity_policy.pdf"
+              saved_as:
+                type: string
+                description: Filename as saved on server
+                example: "maternity_policy_20240916_135900.pdf"
+              file_path:
+                type: string
+                description: Absolute path where file was saved
+                example: "/path/to/uploads/maternity_policy_20240916_135900.pdf"
+              success:
+                type: boolean
+                description: Whether this file was successfully processed
+                example: true
+              chunks_stored:
+                type: integer
+                description: Number of chunks stored for this file
+                example: 23
+              message:
+                type: string
+                description: Success message
+                example: "Successfully stored 23 chunks in vector database"
+              error:
+                type: string
+                description: Error message if processing failed
+                example: "File type not allowed"
+      required:
+        - success
+        - total_files
+        - successful_uploads
+        - failed_uploads
+        - total_chunks_stored
+        - results
+
+  examples:
+    ChatWithoutFiles:
+      summary: Chat without files
+      value:
+        user_id: "user123"
+        user_session: "session456"
+        user_query: "Can you explain the differences in maternity policies between different provinces?"
+
+    ChatResponse:
+      summary: Successful chat response
+      value:
+        success: true
+        response: "In China, maternity leave policies vary by province. For example, Shanghai provides 158 days total (98 basic + 60 extended), while Beijing also provides 158 days but with different benefit structures..."
+        user_id: "user123"
+        user_session: "session456"
+        files_processed: 0
