@@ -1,8 +1,9 @@
 import logging
+import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import List, Union, Any
+from typing import List, Union, Any, Optional
 
 from langchain_core.documents import Document
 from langchain_community.document_loaders import (
@@ -15,6 +16,7 @@ from langchain_community.document_loaders import (
     UnstructuredFileLoader,
 )
 
+# Optional imports with availability flags
 try:
     import pandas as pd
     PANDAS_AVAILABLE = True
@@ -27,22 +29,31 @@ try:
 except ImportError:
     DOCLING_AVAILABLE = False
 
+try:
+    from .excel_loader import ExcelLoader
+    EXCEL_LOADER_AVAILABLE = True
+except ImportError:
+    EXCEL_LOADER_AVAILABLE = False
+
+# Configure logger
 logger = logging.getLogger(__name__)
 
 if not DOCLING_AVAILABLE:
     logger.warning("Docling service not available. PDF and Word files will use standard loaders.")
 
+
 class MultiFileLoader:
     """Document loader supporting multiple file formats using LangChain loaders."""
 
+    # Class constants
     DOCLING_FORMATS = {".pdf", ".docx", ".doc"}
     
     FILE_LOADER_MAP = {
         ".pdf": PyPDFLoader,
         ".docx": UnstructuredWordDocumentLoader,
         ".doc": UnstructuredWordDocumentLoader,
-        ".xlsx": "pandas_excel",  # Use pandas for better Excel content extraction
-        ".xls": "pandas_excel",   # Use pandas for better Excel content extraction
+        ".xlsx": "excel_consolidated",
+        ".xls": "excel_consolidated",
         ".csv": CSVLoader,
         ".html": BSHTMLLoader,
         ".htm": BSHTMLLoader,
@@ -56,13 +67,15 @@ class MultiFileLoader:
         recurse: bool = False, 
         show_progress: bool = False,
         use_docling: bool = True,
-        temp_dir: Union[str, Path, None] = None
+        temp_dir: Union[str, Path, None] = None,
+        excel_header_row: Optional[int] = None
     ):
-        """Initialize MultiFileLoader."""
+        """Initialize MultiFileLoader with configuration options."""
         self.path = Path(path)
         self.recurse = recurse
         self.show_progress = show_progress
         self.use_docling = use_docling and DOCLING_AVAILABLE
+        self.excel_header_row = excel_header_row
         self.temp_dir = Path(temp_dir) if temp_dir else Path(tempfile.gettempdir()) / "docling_temp"
         
         self.temp_dir.mkdir(parents=True, exist_ok=True)
@@ -73,16 +86,18 @@ class MultiFileLoader:
         else:
             logger.info("Using standard loaders for all file types")
 
+    # Validation methods
     def _validate_path(self) -> None:
-        """Validate that the specified path exists."""
+        """Validate that the specified path exists and is accessible."""
         if not self.path.exists():
             raise FileNotFoundError(f"Path not found: {self.path}")
         
         if not (self.path.is_file() or self.path.is_dir()):
             raise ValueError(f"Path must be a file or directory: {self.path}")
-    
+
+    # Preprocessing methods
     def _preprocess_with_docling(self, file_path: Path) -> Path:
-        """Preprocess PDF/Word files with docling to markdown."""
+        """Preprocess PDF/Word files with docling to markdown format."""
         try:
             if self.show_progress:
                 logger.info(f"Preprocessing {file_path.name} with docling...")
@@ -102,13 +117,14 @@ class MultiFileLoader:
         except Exception as e:
             logger.error(f"Docling preprocessing failed for {file_path.name}: {e}")
             raise
-    
+
+    # Loader selection and configuration methods
     def _choose_loader(self, file_path: Path) -> tuple[Any, Path]:
-        """Choose appropriate loader for the given file."""
+        """Choose appropriate loader for the given file type."""
         ext = file_path.suffix.lower()
         actual_path = file_path
         
-        # Check if we should preprocess with docling
+        # Handle docling preprocessing for supported formats
         if self.use_docling and ext in self.DOCLING_FORMATS:
             try:
                 actual_path = self._preprocess_with_docling(file_path)
@@ -121,16 +137,11 @@ class MultiFileLoader:
         else:
             loader_cls = self.FILE_LOADER_MAP.get(ext)
         
-        # Handle pandas Excel loader specially
-        if loader_cls == "pandas_excel":
-            if PANDAS_AVAILABLE:
-                if self.show_progress:
-                    logger.info(f"Using pandas Excel loader for {file_path.name}")
-                return "pandas_excel", actual_path
-            else:
-                logger.warning(f"Pandas not available, falling back to UnstructuredExcelLoader for {file_path.name}")
-                loader_cls = UnstructuredExcelLoader
+        # Handle special Excel loader cases
+        if loader_cls == "excel_consolidated":
+            return self._get_excel_loader(file_path, actual_path, "consolidated")
         
+        # Handle standard loaders
         if loader_cls:
             if self.show_progress and actual_path == file_path:
                 logger.info(f"Using {loader_cls.__name__} for {file_path.name}")
@@ -140,6 +151,22 @@ class MultiFileLoader:
                 logger.info(f"Using UnstructuredFileLoader fallback for {file_path.name}")
             return UnstructuredFileLoader(str(actual_path)), actual_path
 
+    def _get_excel_loader(self, file_path: Path, actual_path: Path, preferred_type: str) -> tuple[Any, Path]:
+        """Get the best available Excel loader based on preferences and availability."""
+        if preferred_type == "consolidated" and EXCEL_LOADER_AVAILABLE:
+            if self.show_progress:
+                logger.info(f"Using consolidated Excel loader for {file_path.name}")
+            return "excel_consolidated", actual_path
+        elif PANDAS_AVAILABLE:
+            logger.warning(f"Consolidated Excel loader not available, falling back to pandas for {file_path.name}")
+            if self.show_progress:
+                logger.info(f"Using pandas Excel loader for {file_path.name}")
+            return "pandas_excel", actual_path
+        else:
+            logger.warning(f"Neither consolidated nor pandas Excel loaders available, using UnstructuredExcelLoader for {file_path.name}")
+            return UnstructuredExcelLoader(str(actual_path)), actual_path
+
+    # Document loading methods
     def load_all(self) -> List[Document]:
         """Load all documents from the specified path."""
         docs = []
@@ -157,52 +184,105 @@ class MultiFileLoader:
             logger.warning(f"Failed to load {files_failed} files")
         
         return docs
-    
+
     def _load_single_file(self, file_path: Path) -> List[Document]:
-        """Load a single file."""
+        """Load documents from a single file."""
         loader, actual_path = self._choose_loader(file_path)
+        
         try:
             if self.show_progress:
                 logger.info(f"Loading: {file_path.name}")
             
-            # Handle pandas Excel loader specially
-            if loader == "pandas_excel":
+            # Handle special Excel loaders
+            if loader == "excel_consolidated":
+                return self._load_excel_with_consolidated_loader(file_path)
+            elif loader == "pandas_excel":
                 return self._load_excel_with_pandas(file_path)
             
+            # Handle standard loaders
             docs = loader.load()
             
-            # Update metadata if we used docling
+            # Update metadata for docling-processed files
             if actual_path != file_path:
                 for doc in docs:
-                    doc.metadata['original_source'] = str(file_path)
-                    doc.metadata['processed_with'] = 'docling'
-                    doc.metadata['markdown_source'] = str(actual_path)
+                    doc.metadata.update({
+                        'original_source': str(file_path),
+                        'processed_with': 'docling',
+                        'markdown_source': str(actual_path)
+                    })
             
             return docs
             
         except Exception as e:
             logger.warning(f"Could not load {file_path.name}: {e}")
             
-            # Try pandas fallback for Excel files (only if not already using pandas)
+            # Try pandas fallback for Excel files
             ext = file_path.suffix.lower()
-            if ext in ['.xlsx', '.xls'] and PANDAS_AVAILABLE and loader != "pandas_excel":
+            if ext in ['.xlsx', '.xls'] and PANDAS_AVAILABLE and loader == "excel_consolidated":
                 logger.info(f"Trying pandas fallback for {file_path.name}")
                 return self._load_excel_with_pandas(file_path)
             
             return []
-    
+
+    def _load_directory(self, docs: List[Document]) -> tuple[int, int]:
+        """Load all supported files from a directory."""
+        pattern = "**/*" if self.recurse else "*"
+        files_processed = 0
+        files_failed = 0
+        
+        for path in self.path.glob(pattern):
+            if not path.is_file():
+                continue
+                
+            file_docs = self._load_single_file(path)
+            if file_docs:
+                docs.extend(file_docs)
+                files_processed += 1
+            else:
+                files_failed += 1
+        
+        return files_processed, files_failed
+
+    # Specialized Excel loading methods
+    def _load_excel_with_consolidated_loader(self, file_path: Path) -> List[Document]:
+        """Load Excel file using the consolidated Excel loader."""
+        try:
+            from .excel_loader import ExcelLoader
+            
+            loader = ExcelLoader(
+                file_path=str(file_path),
+                sheet_name=None,  # Load all sheets
+                header_rows=[1, 2, 3, 4] if self.excel_header_row is None else [self.excel_header_row],
+                preserve_merged_cells=True,
+                backend='auto'
+            )
+            
+            documents = loader.load()
+            
+            # Update metadata to match expected format
+            for doc in documents:
+                doc.metadata.update({
+                    "loader": "consolidated_excel"
+                })
+            
+            return documents
+            
+        except Exception as e:
+            logger.error(f"Error loading Excel file with consolidated loader: {e}")
+            raise
+
     def _load_excel_with_pandas(self, file_path: Path) -> List[Document]:
         """Load Excel file using pandas as fallback."""
         try:
-            # Read Excel file with pandas
             excel_data = pd.read_excel(str(file_path), sheet_name=None)
-            
             docs = []
+            
             if isinstance(excel_data, dict):
                 # Multiple sheets
                 for sheet_name, df in excel_data.items():
                     if not df.empty:
-                        content = df.to_string(index=False)
+                        df_cleaned = df.fillna('')
+                        content = df_cleaned.to_string(index=False)
                         doc = Document(
                             page_content=content,
                             metadata={
@@ -217,7 +297,8 @@ class MultiFileLoader:
             else:
                 # Single sheet
                 if not excel_data.empty:
-                    content = excel_data.to_string(index=False)
+                    excel_data_cleaned = excel_data.fillna('')
+                    content = excel_data_cleaned.to_string(index=False)
                     doc = Document(
                         page_content=content,
                         metadata={
@@ -235,26 +316,17 @@ class MultiFileLoader:
         except Exception as e:
             logger.error(f"Pandas fallback failed for {file_path.name}: {e}")
             return []
-    
-    def _load_directory(self, docs: List[Document]) -> tuple[int, int]:
-        """Load all files from a directory."""
-        pattern = "**/*" if self.recurse else "*"
-        files_processed = 0
-        files_failed = 0
-        
-        for path in self.path.glob(pattern):
-            if not path.is_file():
-                continue
-                
-            file_docs = self._load_single_file(path)
-            if file_docs:
-                docs.extend(file_docs)
-                files_processed += 1
-            else:
-                files_failed += 1
-        
-        return files_processed, files_failed
-    
+
+    # Cleanup methods
+    def cleanup_temp_files(self) -> None:
+        """Clean up temporary files created during processing."""
+        try:
+            if self.temp_dir.exists():
+                shutil.rmtree(self.temp_dir)
+                logger.debug(f"Cleaned up temporary directory: {self.temp_dir}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up temporary directory: {e}")
+
 
 def main() -> None:
     """Main function for command line usage."""
@@ -267,6 +339,7 @@ def main() -> None:
     show_progress = "--progress" in sys.argv
     use_docling = "--no-docling" not in sys.argv
     
+    loader = None
     try:
         loader = MultiFileLoader(
             path=docs_path, 
@@ -301,14 +374,9 @@ def main() -> None:
         sys.exit(1)
     finally:
         # Clean up temporary files
-        if 'loader' in locals() and hasattr(loader, 'temp_dir'):
-            try:
-                import shutil
-                if loader.temp_dir.exists():
-                    shutil.rmtree(loader.temp_dir)
-                    logger.debug(f"Cleaned up temporary directory: {loader.temp_dir}")
-            except Exception as e:
-                logger.warning(f"Failed to clean up temporary directory: {e}")
+        if loader:
+            loader.cleanup_temp_files()
+
 
 if __name__ == "__main__":
     main()

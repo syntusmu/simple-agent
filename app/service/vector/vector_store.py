@@ -405,7 +405,7 @@ class VectorStoreService:
     def search_documents(
         self,
         query: str,
-        n_results: int = 5,
+        n_results: int = 10,
         where: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None

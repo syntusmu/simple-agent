@@ -22,4 +22,4 @@ if __name__ == '__main__':
     logger.info(f"Starting Maternity Agent Dialog Server on port {port}")
     logger.info(f"Debug mode: {debug}")
     
-    app.run(host='0.0.0.0', port=port, debug=debug)
+    app.run(host='0.0.0.0', port=port, debug=True)

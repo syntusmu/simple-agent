@@ -72,7 +72,7 @@ FALLBACK BEHAVIOR:
 - If any tool fails or returns no useful results, answer the question using your training knowledge
 - Always try to be helpful even when tools cannot provide specific information
 
-STRICT FORMAT - Follow exactly:
+STRICT FORMAT - Follow exactly (MANDATORY):
 Question: {input}
 Thought: [Analyze what the user needs, consider conversation history, and which tool to use - respond in the same language as the user's question]
 Action: [EXACTLY one of: {tool_names}]
@@ -80,6 +80,13 @@ Action Input: [Specific input for the chosen tool]
 Observation: [Tool result will appear here]
 Thought: [Evaluate if you have enough information to answer. If tools returned no useful results, use your knowledge to answer directly - respond in the same language as the user's question]
 Final Answer: [Complete answer to the user's question in the SAME LANGUAGE as the user's question - use tool results if available, otherwise use your built-in knowledge]
+
+CRITICAL FORMAT REQUIREMENTS:
+- You MUST always include "Action:" immediately after "Thought:"
+- You MUST use EXACTLY one of these tool names: {tool_names}
+- You MUST NOT skip any steps in the format
+- You MUST end with "Final Answer:" and provide a complete response
+- If you don't need a tool, use "Action: Final Answer" and skip to the final answer
 
 SPECIAL HANDLING FOR DIRECT OUTPUT:
 - If contextual_analyzer returns a result starting with "DIRECT_OUTPUT:", immediately use the content after the colon as your Final Answer

@@ -25,11 +25,25 @@ from vector_store.py which provides a complete document processing pipeline.
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+import re
+from collections import defaultdict
 
 from langchain.schema import Document
 from langchain_community.vectorstores import Chroma
+from rank_bm25 import BM25Okapi
 
 from ..rag.embedding import create_embedding_service, get_embedding_config_info
+
+import hashlib
+import json
+from typing import List, Dict, Any, Optional, Tuple
+from langchain.schema import Document
+from langchain_chroma import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from rank_bm25 import BM25Okapi
+import logging
+import os
+from pathlib import Path
 
 # =============================================================================
 # CONSTANTS
@@ -39,7 +53,7 @@ from ..rag.embedding import create_embedding_service, get_embedding_config_info
 DEFAULT_DB_PATH = "./data/chroma_db"
 DEFAULT_COLLECTION_NAME = "documents"
 DEFAULT_EMBEDDING_PROVIDER = "qwen"
-DEFAULT_N_RESULTS = 5
+DEFAULT_N_RESULTS = 10
 DEFAULT_SIMILARITY_THRESHOLD = 0.0
 
 # Supported operations
@@ -122,6 +136,12 @@ class ChromaDBVectorService:
         self._initialize_embedding_service()
         self._initialize_vectorstore()
         
+        # Initialize BM25 components
+        self.bm25_corpus = []  # Store tokenized documents for BM25
+        self.bm25_documents = []  # Store original documents with metadata
+        self.bm25_index = None  # BM25 index
+        self._initialize_bm25_corpus()
+        
         logger.info(
             f"ChromaDB service initialized successfully: "
             f"provider={self.provider}, model={self.model_name}, "
@@ -180,10 +200,136 @@ class ChromaDBVectorService:
             logger.error(f"Failed to initialize vectorstore: {e}")
             raise
     
+    def _initialize_bm25_corpus(self) -> None:
+        """Initialize BM25 corpus from existing documents in the vectorstore."""
+        try:
+            # Get all existing documents from ChromaDB
+            collection = self.vectorstore._collection
+            all_results = collection.get()
+            
+            if all_results and all_results['documents']:
+                # Tokenize documents for BM25
+                self.bm25_documents = []
+                self.bm25_corpus = []
+                
+                for i, doc_content in enumerate(all_results['documents']):
+                    # Store document with metadata
+                    metadata = all_results['metadatas'][i] if all_results['metadatas'] else {}
+                    doc_id = all_results['ids'][i] if all_results['ids'] else f"doc_{i}"
+                    
+                    self.bm25_documents.append({
+                        'id': doc_id,
+                        'content': doc_content,
+                        'metadata': metadata
+                    })
+                    
+                    # Tokenize for BM25
+                    tokenized = self._tokenize_text(doc_content)
+                    self.bm25_corpus.append(tokenized)
+                
+                # Create BM25 index
+                if self.bm25_corpus:
+                    self.bm25_index = BM25Okapi(self.bm25_corpus)
+                    logger.info(f"BM25 index initialized with {len(self.bm25_corpus)} documents")
+                else:
+                    self.bm25_index = None
+                    logger.info("BM25 index initialized with empty corpus")
+            else:
+                self.bm25_index = None
+                logger.info("BM25 index initialized with empty corpus")
+                
+        except Exception as e:
+            logger.warning(f"Failed to initialize BM25 corpus: {e}")
+            self.bm25_index = None
+            self.bm25_corpus = []
+            self.bm25_documents = []
     
-# =============================================================================
-# DOCUMENT MANAGEMENT METHODS
-# =============================================================================
+    def _tokenize_text(self, text: str) -> List[str]:
+        """
+        Tokenize text for BM25 search.
+        
+        Args:
+            text (str): Text to tokenize
+            
+        Returns:
+            List[str]: List of tokens
+        """
+        # Simple tokenization: lowercase, remove punctuation, split by whitespace
+        text = text.lower()
+        text = re.sub(r'[^\w\s]', ' ', text)
+        tokens = text.split()
+        return [token for token in tokens if len(token) > 1]  # Filter out single characters
+    
+    def _rebuild_bm25_index(self) -> None:
+        """Rebuild BM25 index after document changes."""
+        try:
+            if self.bm25_corpus:
+                self.bm25_index = BM25Okapi(self.bm25_corpus)
+                logger.debug(f"BM25 index rebuilt with {len(self.bm25_corpus)} documents")
+            else:
+                self.bm25_index = None
+                logger.debug("BM25 index cleared (empty corpus)")
+        except Exception as e:
+            logger.error(f"Failed to rebuild BM25 index: {e}")
+            self.bm25_index = None
+    
+    
+    def _generate_content_hash(self, documents: List[Document]) -> str:
+        """
+        Generate a hash for the combined content of all documents.
+        
+        Args:
+            documents (List[Document]): List of documents to hash
+            
+        Returns:
+            str: SHA256 hash of the combined content
+        """
+        # Combine all document content and sort by chunk_index for consistency
+        sorted_docs = sorted(documents, key=lambda x: x.metadata.get('chunk_index', 0))
+        combined_content = ''.join([doc.page_content for doc in sorted_docs])
+        
+        # Generate SHA256 hash
+        content_hash = hashlib.sha256(combined_content.encode('utf-8')).hexdigest()
+        return content_hash
+    
+    def _find_documents_by_content_hash(self, content_hash: str) -> List[Dict[str, Any]]:
+        """
+        Find existing documents by content hash.
+        
+        Args:
+            content_hash (str): Content hash to search for
+            
+        Returns:
+            List[Dict[str, Any]]: List of documents with matching content hash
+        """
+        try:
+            # Get all documents and filter by content hash
+            all_docs = self.vectorstore.get()
+            
+            if not all_docs or not all_docs.get('ids'):
+                return []
+            
+            matching_docs = []
+            ids = all_docs.get('ids', [])
+            metadatas = all_docs.get('metadatas', [])
+            documents_content = all_docs.get('documents', [])
+            
+            for i, doc_id in enumerate(ids):
+                metadata = metadatas[i] if i < len(metadatas) else {}
+                doc_content_hash = metadata.get('content_hash', '')
+                
+                if doc_content_hash == content_hash:
+                    matching_docs.append({
+                        'id': doc_id,
+                        'metadata': metadata,
+                        'page_content': documents_content[i] if i < len(documents_content) else ''
+                    })
+            
+            return matching_docs
+            
+        except Exception as e:
+            logger.error(f"Error finding documents by content hash: {e}")
+            return []
 
     def add_documents(
         self, 
@@ -235,6 +381,10 @@ class ChromaDBVectorService:
             else:
                 # Add documents directly to vectorstore
                 ids = self.vectorstore.add_documents(enhanced_documents)
+                
+                # Update BM25 corpus after adding new documents
+                self._initialize_bm25_corpus()
+                
                 logger.info(f"Successfully added {len(enhanced_documents)} documents with {len(ids)} IDs")
                 return ids
                 
@@ -268,7 +418,7 @@ class ChromaDBVectorService:
             # Create a copy of the document to avoid modifying the original
             enhanced_doc = Document(
                 page_content=doc.page_content,
-                metadata=doc.metadata.copy()
+                metadata=self._filter_metadata_for_chromadb(doc.metadata.copy())
             )
             
             # Add tracking metadata
@@ -285,11 +435,12 @@ class ChromaDBVectorService:
     
     def _upsert_documents(self, documents: List[Document]) -> List[str]:
         """
-        Upsert documents - update existing documents with same filename or add new ones.
+        Upsert documents with content-based logic.
         
-        WARNING: This replaces ANY document with the same filename, regardless of user or session.
-        - Same filename = UPDATE (replace existing document, even from different users/sessions)
-        - Different filename = INSERT (add as new document)
+        Logic:
+        1. Same filename + different content: Update (replace old documents)
+        2. Same filename + same content: Skip (no update needed)
+        3. Different filename + same content: Update filename of existing documents
         
         Args:
             documents (List[Document]): Documents to upsert
@@ -301,94 +452,163 @@ class ChromaDBVectorService:
         
         all_ids = []
         
+        # Group documents by filename for batch processing
+        filename_groups = {}
+        no_filename_docs = []
+        
         for doc in documents:
-            # Use file_name consistently throughout the system
             filename = doc.metadata.get('file_name', '')
-            user_id = doc.metadata.get('user_id')
-            session_id = doc.metadata.get('session_id')
-            
             if filename:
-                # Check if document with same filename exists (regardless of user/session)
-                existing_docs = self._find_documents_by_filename(filename)
+                if filename not in filename_groups:
+                    filename_groups[filename] = []
+                filename_groups[filename].append(doc)
+            else:
+                no_filename_docs.append(doc)
+        
+        # Process each filename group
+        for filename, docs_group in filename_groups.items():
+            user_id = docs_group[0].metadata.get('user_id')
+            session_id = docs_group[0].metadata.get('session_id')
+            
+            # Generate content hash for the new documents
+            content_hash = self._generate_content_hash(docs_group)
+            
+            # Add content hash to all documents in the group
+            for doc in docs_group:
+                doc.metadata['content_hash'] = content_hash
+            
+            # Check for documents with same filename
+            docs_to_update, docs_with_same_content = self._find_documents_by_filename(filename, content_hash)
+            
+            if docs_with_same_content:
+                # Scenario 2: Same filename + same content = Skip
+                logger.info(f"Skipping upload for {filename}: identical content already exists "
+                           f"({len(docs_with_same_content)} existing chunks)")
+                continue
+            
+            elif docs_to_update:
+                # Scenario 1: Same filename + different content = Update
+                logger.warning(f"Updating document with same filename: {filename} "
+                             f"(original user: {docs_to_update[0].get('metadata', {}).get('user_id', 'unknown')}, "
+                             f"new user: {user_id}) - replacing {len(docs_to_update)} old chunks with {len(docs_group)} new chunks")
                 
-                if existing_docs:
-                    # Update existing documents (same filename, may be from different user/session)
-                    logger.warning(f"Replacing existing document with same filename: {filename} (original user: {existing_docs[0].get('metadata', {}).get('user_id', 'unknown')}, new user: {user_id})")
-                    
-                    # Update metadata with new timestamp
+                # Delete all old documents with same filename
+                old_ids = [doc['id'] for doc in docs_to_update]
+                self.delete_documents(old_ids)
+                
+                # Update metadata for all new documents
+                for i, doc in enumerate(docs_group):
                     doc.metadata['last_updated'] = datetime.now().isoformat()
-                    doc.metadata['update_count'] = existing_docs[0].get('metadata', {}).get('update_count', 0) + 1
+                    doc.metadata['update_count'] = docs_to_update[0].get('metadata', {}).get('update_count', 0) + 1
+                    doc.metadata['chunk_index'] = i
+                
+                logger.info(f"Updated document {filename}: replaced {len(old_ids)} old versions with {len(docs_group)} new chunks")
+            
+            else:
+                # Check for documents with same content but different filename (Scenario 3)
+                docs_with_same_content_hash = self._find_documents_by_content_hash(content_hash)
+                
+                if docs_with_same_content_hash:
+                    # Scenario 3: Different filename + same content = Update filename
+                    old_filename = docs_with_same_content_hash[0].get('metadata', {}).get('file_name', 'unknown')
+                    logger.info(f"Found same content with different filename: updating '{old_filename}' to '{filename}' "
+                               f"({len(docs_with_same_content_hash)} chunks)")
                     
-                    # Delete old document(s) and add updated one
-                    old_ids = [existing_doc['id'] for existing_doc in existing_docs]
+                    # Delete old documents with same content
+                    old_ids = [doc['id'] for doc in docs_with_same_content_hash]
                     self.delete_documents(old_ids)
                     
-                    # Add updated document
-                    new_ids = self.vectorstore.add_documents([doc])
-                    all_ids.extend(new_ids)
+                    # Update metadata for new documents
+                    for i, doc in enumerate(docs_group):
+                        doc.metadata['last_updated'] = datetime.now().isoformat()
+                        doc.metadata['update_count'] = docs_with_same_content_hash[0].get('metadata', {}).get('update_count', 0) + 1
+                        doc.metadata['chunk_index'] = i
+                        doc.metadata['filename_updated'] = True
+                        doc.metadata['previous_filename'] = old_filename
                     
-                    logger.info(f"Updated document {filename}: replaced {len(old_ids)} old versions (new user: {user_id})")
+                    logger.info(f"Updated filename from '{old_filename}' to '{filename}' for {len(docs_group)} chunks")
+                
                 else:
-                    # Add new document (different user/session or new filename)
-                    doc.metadata['update_count'] = 0
-                    new_ids = self.vectorstore.add_documents([doc])
-                    all_ids.extend(new_ids)
+                    # New document (new filename and new content)
+                    for i, doc in enumerate(docs_group):
+                        doc.metadata['update_count'] = 0
+                        doc.metadata['chunk_index'] = i
                     
-                    logger.info(f"Added new document: filename={filename}, user_id={user_id}, session_id={session_id}")
-            else:
-                # No filename - add as new document
-                doc.metadata['update_count'] = 0
-                new_ids = self.vectorstore.add_documents([doc])
+                    logger.info(f"Added new document: filename={filename}, user_id={user_id}, session_id={session_id}, chunks={len(docs_group)}")
+            
+            # Add all documents in the group (unless skipped)
+            if not docs_with_same_content:  # Only add if not skipped
+                new_ids = self.vectorstore.add_documents(docs_group)
                 all_ids.extend(new_ids)
         
+        # Process documents without filename
+        for doc in no_filename_docs:
+            doc.metadata['update_count'] = 0
+            doc.metadata['content_hash'] = self._generate_content_hash([doc])
+            new_ids = self.vectorstore.add_documents([doc])
+            all_ids.extend(new_ids)
+        
         logger.info(f"Upsert operation completed: {len(all_ids)} documents processed")
+        
+        # Update BM25 corpus after document changes
+        self._initialize_bm25_corpus()
+        
         return all_ids
     
-    def _find_documents_by_filename(self, filename: str) -> List[Dict[str, Any]]:
+    def _find_documents_by_filename(self, filename: str, content_hash: Optional[str] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Find existing documents by filename only (ignores user_id and session_id).
+        Find existing documents by filename and content hash for content-based comparison.
         
-        WARNING: This finds ALL documents with the same filename, regardless of who uploaded them.
-        This enables filename-based replacement across users and sessions.
+        Returns two lists:
+        1. Documents with same filename but different content hash (for update)
+        2. Documents with same filename and same content hash (for skip)
         
         Args:
             filename (str): Filename to search for
+            content_hash (Optional[str]): Content hash of new documents
             
         Returns:
-            List[Dict[str, Any]]: List of all documents with matching filename
+            Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]: 
+                (documents_to_update, documents_with_same_content)
         """
         try:
-            # Get all documents and filter by filename only
+            # Get all documents and filter by filename
             all_docs = self.vectorstore.get()
             
             if not all_docs or not all_docs.get('ids'):
-                return []
+                return [], []
             
-            matching_docs = []
+            documents_to_update = []
+            documents_with_same_content = []
             ids = all_docs.get('ids', [])
             metadatas = all_docs.get('metadatas', [])
             documents_content = all_docs.get('documents', [])
             
             for i, doc_id in enumerate(ids):
                 metadata = metadatas[i] if i < len(metadatas) else {}
-                # Use file_name consistently throughout the system
                 doc_filename = metadata.get('file_name', '')
+                doc_content_hash = metadata.get('content_hash', '')
                 
-                # Check if filename matches (ignore user_id and session_id)
-                filename_match = doc_filename == filename
-                
-                if filename_match:
-                    matching_docs.append({
+                # Check if filename matches
+                if doc_filename == filename:
+                    doc_info = {
                         'id': doc_id,
                         'metadata': metadata,
                         'page_content': documents_content[i] if i < len(documents_content) else ''
-                    })
+                    }
+                    
+                    if content_hash and doc_content_hash == content_hash:
+                        # Same filename, same content - skip update
+                        documents_with_same_content.append(doc_info)
+                    else:
+                        # Same filename, different content - update
+                        documents_to_update.append(doc_info)
             
-            return matching_docs
+            return documents_to_update, documents_with_same_content
             
         except Exception as e:
             logger.error(f"Error finding documents by filename: {e}")
-            return []
+            return [], []
     
     def delete_documents(self, ids: List[str]) -> bool:
         """
@@ -555,10 +775,7 @@ class ChromaDBVectorService:
         where: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
-        Perform BM25 search for documents (fallback to similarity search).
-        
-        Note: ChromaDB doesn't have native BM25 support in this configuration,
-        so this method falls back to similarity search with a warning.
+        Perform BM25 search for documents using rank_bm25.
         
         Args:
             query (str): Search query text
@@ -566,48 +783,165 @@ class ChromaDBVectorService:
             where (Optional[Dict[str, Any]]): Metadata filter conditions
             
         Returns:
-            List[Dict[str, Any]]: List of search results (via similarity search)
+            List[Dict[str, Any]]: List of search results with BM25 scores
         """
-        logger.warning(
-            "BM25 search not natively supported by ChromaDB, "
-            "falling back to similarity search"
-        )
-        return self.similarity_search(query, n_results, where)
+        if not self.bm25_index or not self.bm25_documents:
+            logger.warning("BM25 index not available, falling back to similarity search")
+            return self.similarity_search(query, n_results, where)
+        
+        try:
+            # Tokenize query
+            query_tokens = self._tokenize_text(query)
+            
+            if not query_tokens:
+                logger.warning("Empty query after tokenization")
+                return []
+            
+            # Get BM25 scores for all documents
+            scores = self.bm25_index.get_scores(query_tokens)
+            
+            # Create list of (score, document_index) pairs
+            scored_docs = [(scores[i], i) for i in range(len(scores))]
+            
+            # Sort by score (descending)
+            scored_docs.sort(key=lambda x: x[0], reverse=True)
+            
+            # Apply metadata filtering if specified
+            filtered_results = []
+            for score, doc_idx in scored_docs:
+                if len(filtered_results) >= n_results:
+                    break
+                    
+                doc = self.bm25_documents[doc_idx]
+                
+                # Apply metadata filter if specified
+                if where:
+                    if not self._matches_filter(doc['metadata'], where):
+                        continue
+                
+                # Format result
+                result = {
+                    'id': doc['id'],
+                    'document': doc['content'],
+                    'metadata': doc['metadata'],
+                    'score': float(score),
+                    'search_type': 'bm25'
+                }
+                filtered_results.append(result)
+            
+            logger.info(f"BM25 search returned {len(filtered_results)} results for query: '{query[:50]}...'")
+            return filtered_results
+            
+        except Exception as e:
+            logger.error(f"BM25 search failed: {e}")
+            logger.warning("Falling back to similarity search")
+            return self.similarity_search(query, n_results, where)
+    
+    def _matches_filter(self, metadata: Dict[str, Any], where: Dict[str, Any]) -> bool:
+        """
+        Check if document metadata matches the filter conditions.
+        
+        Args:
+            metadata (Dict[str, Any]): Document metadata
+            where (Dict[str, Any]): Filter conditions
+            
+        Returns:
+            bool: True if metadata matches all filter conditions
+        """
+        for key, value in where.items():
+            if key not in metadata:
+                return False
+            if metadata[key] != value:
+                return False
+        return True
     
     def hybrid_search(
         self,
         query: str,
         n_results: int = DEFAULT_N_RESULTS,
         where: Optional[Dict[str, Any]] = None,
-        similarity_weight: float = 1.0
+        similarity_weight: float = 0.7,
+        bm25_weight: float = 0.3
     ) -> List[Dict[str, Any]]:
         """
-        Perform hybrid search combining similarity and keyword matching.
-        
-        Currently implements similarity search only, but provides interface
-        for future hybrid search implementations.
+        Perform hybrid search combining similarity and BM25 search.
         
         Args:
             query (str): Search query text
             n_results (int): Number of results to return
             where (Optional[Dict[str, Any]]): Metadata filter conditions
             similarity_weight (float): Weight for similarity search (0.0-1.0)
+            bm25_weight (float): Weight for BM25 search (0.0-1.0)
             
         Returns:
-            List[Dict[str, Any]]: List of search results
+            List[Dict[str, Any]]: List of search results with combined scores
         """
-        logger.info(f"Performing hybrid search with similarity_weight={similarity_weight}")
+        logger.info(f"Performing hybrid search with similarity_weight={similarity_weight}, bm25_weight={bm25_weight}")
         
-        # For now, just perform similarity search
-        # Future enhancement: combine with BM25 or keyword search
-        results = self.similarity_search(query, n_results, where)
+        # Normalize weights
+        total_weight = similarity_weight + bm25_weight
+        if total_weight > 0:
+            similarity_weight = similarity_weight / total_weight
+            bm25_weight = bm25_weight / total_weight
+        else:
+            similarity_weight = 0.7
+            bm25_weight = 0.3
         
-        # Add hybrid search metadata
-        for result in results:
-            result['search_type'] = 'hybrid_similarity'
-            result['similarity_weight'] = similarity_weight
-        
-        return results
+        try:
+            # Get results from both search methods
+            similarity_results = self.similarity_search(query, n_results * 2, where)  # Get more for better fusion
+            bm25_results = self.bm25_search(query, n_results * 2, where)
+            
+            # Create a combined score dictionary
+            combined_scores = defaultdict(lambda: {'similarity': 0, 'bm25': 0, 'doc': None})
+            
+            # Process similarity results
+            for i, result in enumerate(similarity_results):
+                doc_id = result['id']
+                # Normalize similarity score (higher rank = lower index = higher score)
+                norm_score = (len(similarity_results) - i) / len(similarity_results)
+                combined_scores[doc_id]['similarity'] = norm_score
+                combined_scores[doc_id]['doc'] = result
+            
+            # Process BM25 results
+            for i, result in enumerate(bm25_results):
+                doc_id = result['id']
+                # Normalize BM25 score (higher rank = lower index = higher score)
+                norm_score = (len(bm25_results) - i) / len(bm25_results)
+                combined_scores[doc_id]['bm25'] = norm_score
+                if combined_scores[doc_id]['doc'] is None:
+                    combined_scores[doc_id]['doc'] = result
+            
+            # Calculate final scores and create result list
+            final_results = []
+            for doc_id, scores in combined_scores.items():
+                if scores['doc'] is None:
+                    continue
+                    
+                final_score = (scores['similarity'] * similarity_weight + 
+                             scores['bm25'] * bm25_weight)
+                
+                result = scores['doc'].copy()
+                result['score'] = final_score
+                result['search_type'] = 'hybrid'
+                result['similarity_score'] = scores['similarity']
+                result['bm25_score'] = scores['bm25']
+                result['similarity_weight'] = similarity_weight
+                result['bm25_weight'] = bm25_weight
+                
+                final_results.append(result)
+            
+            # Sort by final score and limit results
+            final_results.sort(key=lambda x: x['score'], reverse=True)
+            final_results = final_results[:n_results]
+            
+            logger.info(f"Hybrid search returned {len(final_results)} results")
+            return final_results
+            
+        except Exception as e:
+            logger.error(f"Hybrid search failed: {e}")
+            logger.warning("Falling back to similarity search")
+            return self.similarity_search(query, n_results, where)
     
     def _validate_search_params(self, query: str, n_results: int) -> None:
         """
@@ -917,6 +1251,55 @@ class ChromaDBVectorService:
         except Exception as e:
             logger.error(f"Failed to delete documents for session {session_id}: {e}")
             return False
+
+    def _filter_metadata_for_chromadb(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Filter metadata to ensure compatibility with ChromaDB.
+        ChromaDB only supports str, int, float, bool, and None as metadata values.
+        
+        Args:
+            metadata (Dict[str, Any]): Original metadata dictionary
+            
+        Returns:
+            Dict[str, Any]: Filtered metadata with ChromaDB-compatible values
+        """
+        filtered_metadata = {}
+        
+        for key, value in metadata.items():
+            if value is None or isinstance(value, (str, int, float, bool)):
+                # Direct support for basic types
+                filtered_metadata[key] = value
+            elif isinstance(value, list):
+                # Convert lists to comma-separated strings
+                if value:  # Only if list is not empty
+                    try:
+                        # Convert all list items to strings and join
+                        str_items = [str(item) for item in value]
+                        filtered_metadata[f"{key}_list"] = ", ".join(str_items)
+                        # Also store the count for reference
+                        filtered_metadata[f"{key}_count"] = len(value)
+                    except Exception as e:
+                        logger.warning(f"Failed to convert list metadata '{key}': {e}")
+                        filtered_metadata[f"{key}_type"] = "list"
+            elif isinstance(value, dict):
+                # Convert dictionaries to JSON strings
+                try:
+                    import json
+                    filtered_metadata[f"{key}_json"] = json.dumps(value)
+                    filtered_metadata[f"{key}_type"] = "dict"
+                except Exception as e:
+                    logger.warning(f"Failed to convert dict metadata '{key}': {e}")
+                    filtered_metadata[f"{key}_type"] = "dict"
+            else:
+                # Convert other types to strings
+                try:
+                    filtered_metadata[f"{key}_str"] = str(value)
+                    filtered_metadata[f"{key}_type"] = type(value).__name__
+                except Exception as e:
+                    logger.warning(f"Failed to convert metadata '{key}' of type {type(value)}: {e}")
+                    filtered_metadata[f"{key}_type"] = type(value).__name__
+        
+        return filtered_metadata
 
 
 # =============================================================================

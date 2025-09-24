@@ -69,7 +69,8 @@ class DocumentRetrieverWrapper(BaseRetriever):
     def _extract_file_name(self, metadata: dict) -> str:
         """Extract file name from document metadata."""
         # Try different possible metadata keys for file name
-        possible_keys = ['source', 'file_name', 'filename', 'file', 'document_name', 'name']
+        # Prioritize original filename fields over source field to avoid showing temporary filenames
+        possible_keys = ['file_name', 'filename', 'document_name', 'name', 'file', 'source']
         
         for key in possible_keys:
             if key in metadata and metadata[key]:

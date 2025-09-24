@@ -55,7 +55,7 @@ class CustomBM25Retriever(BaseRetriever):
     vector_service: ChromaDBVectorService
     n_results: int
     
-    def __init__(self, vector_service: ChromaDBVectorService, n_results: int = 20) -> None:
+    def __init__(self, vector_service: ChromaDBVectorService, n_results: int = 10) -> None:
         """Initialize CustomBM25Retriever.
         
         Args:

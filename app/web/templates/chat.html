@@ -2283,6 +2283,13 @@
 
         
         // =============================================================================
+        // SESSION MANAGEMENT
+        // =============================================================================
+        
+        // Generate a persistent session ID for the entire conversation
+        let currentSessionId = 'web_session_' + Date.now();
+        
+        // =============================================================================
         // EVENT LISTENERS
         // =============================================================================
         
@@ -2320,7 +2327,7 @@
                 // Create form data
                 const formData = new FormData();
                 formData.append('user_id', 'web_user');
-                formData.append('user_session', 'web_session_' + Date.now());
+                formData.append('user_session', currentSessionId);
                 formData.append('user_query', message);
                 
                 // Add files if any

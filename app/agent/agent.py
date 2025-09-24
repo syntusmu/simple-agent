@@ -189,8 +189,8 @@ class ReActAgent:
                 tools=self.tools,
                 memory=self.memory_manager.memory,
                 verbose=True,
-                handle_parsing_errors=True,
-                max_iterations=5,
+                handle_parsing_errors="Check your output and make sure it conforms to the format instructions. Always include 'Action:' after 'Thought:' and use one of the available tool names.",
+                max_iterations=3,
                 early_stopping_method="force"
             )
             
