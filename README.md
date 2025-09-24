@@ -2,6 +2,20 @@
 
 A powerful AI agent framework with document processing, vector storage, and intelligent conversation capabilities. Built with Flask, ChromaDB, and support for multiple LLM providers.
 
+## 📸 Interface Preview
+
+### Chat Interface
+![Simple Agent Chat Interface](simple-agent-1-chat-interface.png)
+*Interactive chat interface with streaming responses and file upload capabilities*
+
+### Document Upload
+![Simple Agent Document Upload](simple-agent-2-upload-docs.png)
+*Easy document upload interface supporting multiple file formats*
+
+### Vector Database Management
+![Simple Agent Vector Database](simple-agent-3-vector-db-management.png)
+*Comprehensive vector database management with document listing and deletion*
+
 ## ✨ Features
 
 - **Multi-format Document Processing**: PDF, DOCX, Excel, CSV, TXT, Markdown, HTML
