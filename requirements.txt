@@ -29,6 +29,7 @@ langchain-experimental>=0.0.62
 langchain-text-splitters>=0.2.0
 langchain-huggingface>=0.0.3
 langchain-openai>=0.1.8
+langchain-chroma==0.2.6
 
 # LLM providers
 openai>=1.35.0

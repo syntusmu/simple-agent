@@ -212,10 +212,17 @@ $RECYCLE.BIN/
 *.lnk
 
 # # Project-specific ignores
-# # Configuration files with sensitive data
+# 
+# Temporary pip cache
+temppip-cache/
+
+# Configuration files
+config.ini
+
 
 
 # Database files
+data/
 
 # Vector database directories
 
